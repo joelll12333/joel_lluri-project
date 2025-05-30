@@ -1,0 +1,444 @@
+import os
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+def read_excel(excel_file):
+    """
+    Read beam data from Excel file
+    :return df: The DataFrame representation of the excel file.
+    """
+    try:
+        df = pd.read_excel(excel_file)
+        print(f"Successfully loaded data from excel file.")
+        print(f"Columns found: {list(df.columns)}")
+        return df
+    except Exception as e:
+        print(f"Error reading Excel file: {e}")
+        return None
+
+def determine_beam_type(left_support, right_support):
+    """
+    Determine if beam is simply supported or cantilever based on support types.
+    :return: The type of the beam.
+    """
+    left_support = left_support.lower().strip()
+    right_support = right_support.lower().strip()
+    
+    if ((left_support == 'pin' and right_support == 'roller') or 
+        (left_support == 'roller' and right_support == 'pin')):
+        return 'simply_supported'
+    
+    elif ((left_support == 'fixed' and right_support == 'free') or 
+          (left_support == 'free' and right_support == 'fixed')):
+        return 'cantilever'
+    
+    else:
+        print(f"Warning: Unknown beam configuration - Left: '{left_support}', Right: '{right_support}'")
+        if left_support != 'free' and right_support != 'free':
+            print(f"Defaulting to simply supported beam")
+            return 'simply_supported'
+        return 'unknown'
+
+def calculate_simply_supported_reactions(beam_length, p_load, p_location, w_load, w_distance, w_location, moment_load):
+    """
+    Calculate reactions for simply supported beam using moment equilibrium about left support (A)
+    :return: A dictionary with reaction values
+    """
+    moment_sum = 0
+    if p_load != 0:
+        moment_sum += p_load * p_location
+    if w_load != 0 and w_distance != 0:
+        w_center = w_location + w_distance / 2
+        total_w = w_load * w_distance
+        moment_sum += total_w * w_center
+    if moment_load != 0:
+        moment_sum += moment_load
+    
+    R_B = moment_sum / beam_length
+    total_vertical_load = p_load + (w_load * w_distance if w_load != 0 else 0)
+    R_A = total_vertical_load - R_B
+    
+    return {
+        'beam_type': 'simply_supported',
+        'R_A': round(R_A, 3),
+        'R_B': round(R_B, 3),
+        'M_A': 0,
+        'M_B': 0
+    }
+
+def calculate_cantilever_reactions(beam_length, left_support, p_load, p_location, w_load, w_distance, w_location, moment_load):
+    """
+    Calculate reactions for cantilever beam
+    :returns: dictionary with reaction values
+    """
+    total_vertical_load = p_load + (w_load * w_distance if w_load != 0 else 0)
+    
+    if left_support.lower().strip() == 'fixed':
+        moment_sum = 0
+        if p_load != 0:
+            moment_sum += p_load * p_location
+        
+        if w_load != 0 and w_distance != 0:
+            w_center = w_location + w_distance / 2
+            total_w = w_load * w_distance
+            moment_sum += total_w * w_center
+        
+        if moment_load != 0:
+            moment_sum += moment_load
+            
+        return {
+            'beam_type': 'cantilever',
+            'R_A': round(total_vertical_load, 3),
+            'R_B': 0,
+            'M_A': round(moment_sum, 3),
+            'M_B': 0
+        }
+    
+    else:
+        moment_sum = 0
+        if p_load != 0:
+            moment_sum += p_load * (beam_length - p_location)
+        if w_load != 0 and w_distance != 0:
+            w_center = w_location + w_distance / 2
+            total_w = w_load * w_distance
+            moment_sum += total_w * (beam_length - w_center)
+        if moment_load != 0:
+            moment_sum += moment_load
+            
+        return {
+            'beam_type': 'cantilever',
+            'R_A': 0,
+            'R_B': round(total_vertical_load, 3),
+            'M_A': 0,
+            'M_B': round(moment_sum, 3)
+        }
+
+def calculate_support_reactions(beam_length, left_support, right_support, p_load, p_location, w_load, w_distance, w_location, moment_load):
+    """
+    Calculate support reactions for different beam types
+    Returns: dictionary with all reaction values
+    """
+    beam_type = determine_beam_type(left_support, right_support)
+    
+    print(f"Determined beam type: {beam_type}")
+    
+    if beam_type == 'simply_supported':
+        return calculate_simply_supported_reactions(beam_length, p_load, p_location, w_load, w_distance, w_location, moment_load)
+    elif beam_type == 'cantilever':
+        return calculate_cantilever_reactions(beam_length, left_support, p_load, p_location, w_load, w_distance, w_location, moment_load)
+    else:
+        print(f"Error: Unknown beam type '{beam_type}' for supports: Left='{left_support}', Right='{right_support}'")
+        return {'error': f'Unknown beam type: {beam_type}'}
+
+def calculate_shear_at_position(position, reactions, p_load, p_location, w_load, w_distance, w_location):
+    """
+    Calculate shear force at a specific position along the beam
+    """
+    shear_at_position = 0
+    
+    if reactions.get('R_A', 0) != 0:
+        shear_at_position += reactions['R_A']
+    if p_load != 0 and position > p_location:
+        shear_at_position -= p_load
+    if w_load != 0 and w_distance != 0:
+        if position > w_location:
+            if position <= w_location + w_distance:
+                shear_at_position -= w_load * (position - w_location)
+            else:
+                shear_at_position -= w_load * w_distance
+    
+    return round(shear_at_position, 3)
+
+def calculate_moment_at_position(position, reactions, p_load, p_location, w_load, w_distance, w_location, moment_load, moment_location):
+    """
+    Calculate bending moment at a specific position along the beam.
+    """
+    moment_at_position = 0
+    
+    if reactions.get('R_A', 0) != 0:
+        moment_at_position += reactions['R_A'] * position
+    if reactions.get('M_A', 0) != 0:
+        moment_at_position += reactions['M_A']
+    if p_load != 0 and position > p_location:
+        moment_at_position -= p_load * (position - p_location)
+    if w_load != 0 and w_distance != 0:
+        if position > w_location:
+            if position <= w_location + w_distance:
+                load_length = position - w_location
+                moment_at_position -= w_load * load_length * (load_length / 2)
+            else:
+                centroid_distance = position - (w_location + w_distance/2)
+                moment_at_position -= w_load * w_distance * centroid_distance
+    
+    if moment_load != 0 and position > moment_location:
+        moment_at_position += moment_load
+    
+    return round(moment_at_position, 3)
+
+def calculate_shear_moment_arrays(beam_length, reactions, p_load, p_location, w_load, w_distance, w_location, moment_load, moment_location, num_points=100):
+    """
+    Calculate shear and moment arrays along the beam length
+    :return: x positions, shear array, moment array
+    """
+    x = np.linspace(0, beam_length, num_points)
+    shear = np.zeros(num_points)
+    moment = np.zeros(num_points)
+    
+    for i in range(num_points):
+        position = x[i]
+        shear[i] = calculate_shear_at_position(position, reactions, p_load, p_location, w_load, w_distance, w_location)
+        moment[i] = calculate_moment_at_position(position, reactions, p_load, p_location, w_load, w_distance, w_location, moment_load, moment_location)
+    
+    return x, shear, moment
+
+def get_safe_value(row, column_name, default_value=0):
+    """
+    Safely get a value from a dataframe row, returning default if not found.
+    """
+    try:
+        value = row.get(column_name, default_value)
+        if pd.isna(value):
+            return default_value
+        return float(value)
+    except:
+        return default_value
+
+def get_safe_string(row, column_name, default_value=''):
+    """
+    Safely get a string value from a dataframe row
+    """
+    try:
+        value = row.get(column_name, default_value)
+        if pd.isna(value):
+            return default_value
+        return str(value).strip()
+    except:
+        return default_value
+
+def process_single_beam(row_data):
+    """
+    Process a single beam from the dataframe row
+    Returns: dictionary with all calculated values
+    """
+    beam_length = get_safe_value(row_data, 'Beam length (m)', 0)
+    left_support = get_safe_string(row_data, 'Left support', 'pin')
+    
+    right_support = get_safe_string(row_data, 'Right support', '')
+    
+    if not right_support:
+        if left_support.lower() == 'fixed':
+            right_support = 'free'
+        elif left_support.lower() == 'free':
+            right_support = 'fixed'
+        else:
+            right_support = 'roller'
+    
+    p_load = get_safe_value(row_data, 'P load (kn)', 0)
+    p_location = get_safe_value(row_data, 'P location from left support (m)', 0)
+    
+    w_load = get_safe_value(row_data, 'W load (kn/m)', 0)
+    w_distance = get_safe_value(row_data, 'W distance (m)', 0)
+    w_location = get_safe_value(row_data, 'W location from left support (m)', 0)
+    
+    moment_load = 0
+    moment_location = 0
+    
+    print(f"Processing beam: Length={beam_length}, Left={left_support}, Right={right_support}")
+    print(f"P_load={p_load}, P_loc={p_location}, W_load={w_load}, W_dist={w_distance}, W_loc={w_location}")
+    
+    reactions = calculate_support_reactions(
+        beam_length, left_support, right_support,
+        p_load, p_location, w_load, w_distance, w_location,
+        moment_load
+    )
+    
+    if 'error' in reactions:
+        return {'error': reactions['error']}
+    
+    x, shear, moment = calculate_shear_moment_arrays(
+        beam_length, reactions, p_load, p_location,
+        w_load, w_distance, w_location, moment_load, moment_location
+    )
+    
+    max_shear = round(max(abs(shear)) if len(shear) > 0 else 0, 3)
+    max_moment = round(max(abs(moment)) if len(moment) > 0 else 0, 3)
+    
+    return {
+        'beam_type': reactions['beam_type'],
+        'left_reaction': reactions.get('R_A', 0),
+        'right_reaction': reactions.get('R_B', 0),
+        'fixed_moment': reactions.get('M_A', reactions.get('M_B', 0)),
+        'max_shear': max_shear,
+        'max_moment': max_moment,
+        'shear_array': [round(val, 3) for val in shear.tolist()],
+        'moment_array': [round(val, 3) for val in moment.tolist()],
+        'x_positions': [round(val, 3) for val in x.tolist()]
+    }
+
+def process_all_beams(df):
+    """
+    Process all beams in the dataframe
+    Returns: dataframe with added result columns
+    """
+    df['Beam type'] = ''
+    df['Left reaction (kN)'] = 0.0
+    df['Right reaction (kN)'] = 0.0
+    df['Fixed moment (kN/m)'] = 0.0
+    df['Max shear (kN)'] = 0.0
+    df['Max moment (kN/m)'] = 0.0
+    df['Shear array'] = ''
+    df['Moment array'] = ''
+    
+    for idx in range(len(df)):
+        try:
+            row_data = df.iloc[idx]
+            result = process_single_beam(row_data)
+            
+            if 'error' in result:
+                print(f"Error processing beam {idx + 1}: {result['error']}")
+                continue
+            
+            df.at[idx, 'Beam type'] = result['beam_type']
+            df.at[idx, 'Left reaction (kN)'] = round(result['left_reaction'], 3)
+            df.at[idx, 'Right reaction (kN)'] = round(result['right_reaction'], 3)
+            df.at[idx, 'Fixed moment (kN/m)'] = round(result['fixed_moment'], 3)
+            df.at[idx, 'Max shear (kN)'] = result['max_shear']
+            df.at[idx, 'Max moment (kN/m)'] = result['max_moment']
+            df.at[idx, 'Shear array'] = str(result['shear_array'])
+            df.at[idx, 'Moment array'] = str(result['moment_array'])
+            
+            print(f"Processed beam {idx + 1}: {result['beam_type']}")
+            
+        except Exception as e:
+            print(f"Error processing beam {idx + 1}: {e}")
+            continue
+    
+    return df
+
+def plot_diagrams(df, beam_index, save_path=None):
+    """
+    Plot shear and moment diagrams for a specific beam
+    """
+    if beam_index >= len(df):
+        print("Invalid beam index")
+        return
+    
+    row_data = df.iloc[beam_index]
+    result = process_single_beam(row_data)
+    
+    if 'error' in result:
+        print(f"Error plotting beam {beam_index + 1}: {result['error']}")
+        return
+    
+    x = np.array(result['x_positions'])
+    shear = np.array(result['shear_array'])
+    moment = np.array(result['moment_array'])
+    
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+    
+    ax1.plot(x, shear, 'b-', linewidth=2, label='Shear Force')
+    ax1.fill_between(x, shear, alpha=0.3, color='blue')
+    ax1.axhline(y=0, color='k', linestyle='-', alpha=0.3)
+    ax1.set_ylabel('Shear Force (kN)')
+    ax1.set_title(f'Beam {beam_index + 1} - Shear Force Diagram')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
+    
+    ax2.plot(x, moment, 'r-', linewidth=2, label='Bending Moment')
+    ax2.fill_between(x, moment, alpha=0.3, color='red')
+    ax2.axhline(y=0, color='k', linestyle='-', alpha=0.3)
+    ax2.set_xlabel('Distance from Left Support (m)')
+    ax2.set_ylabel('Bending Moment (kNm)')
+    ax2.set_title(f'Beam {beam_index + 1} - Bending Moment Diagram')
+    ax2.grid(True, alpha=0.3)
+    ax2.legend()
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Saved diagram for beam {beam_index + 1} to {save_path}")
+        plt.close()
+    else:
+        plt.show()
+
+def save_results_to_excel(df, output_file):
+    """
+    Save results to Excel file
+    """
+    try:
+        df.to_excel(output_file, index=False)
+        print(f"Results saved to {output_file}")
+        return True
+    except Exception as e:
+        print(f"Error saving file: {e}")
+        return False
+
+def print_results_summary(df):
+    """
+    Print a summary of the results
+    """
+    print("\nAnalysis Results Summary:")
+    print("=" * 80)
+    
+    summary_columns = ['Beam type', 'Left reaction (kN)', 'Right reaction (kN)', 
+                      'Fixed moment (kN/m)', 'Max shear (kN)', 'Max moment (kN/m)']
+    
+    existing_columns = [col for col in summary_columns if col in df.columns]
+    
+    if existing_columns:
+        display_df = df[existing_columns].copy()
+        for col in existing_columns:
+            if col != 'Beam type' and col in display_df.columns:
+                display_df[col] = display_df[col].round(3)
+        print(display_df.to_string(index=False))
+    else:
+        print("No results to display. Make sure to process the beams first.")
+
+def main():
+    """
+    Main function to run the beam analysis
+    """
+    
+    excel_file = 'sample_values.xlsx'  # Change the path to the .xlsx file you want to use.
+    
+    print("Starting Beam Analysis Program")
+    print("=" * 50)
+    
+    print("Step 1: Reading Excel data...")
+    df = read_excel(excel_file)
+    
+    if df is None:
+        print("Failed to read Excel file. Please check the file name and format.")
+        return
+    
+    print("\nStep 2: Processing all beams...")
+    df_with_results = process_all_beams(df)
+    
+    print("\nStep 3: Saving results to Excel...")
+    output_file = excel_file.replace('.xlsx', '_results.xlsx')
+    save_results_to_excel(df_with_results, output_file)
+    
+    print("\nStep 4: Displaying results summary...")
+    print_results_summary(df_with_results)
+    
+    print("\nStep 5: Creating graphs for all beams...")
+    graphs_folder = 'beam_graphs'
+    
+    if not os.path.exists(graphs_folder):
+        os.makedirs(graphs_folder)
+        print(f"Created folder: {graphs_folder}")
+    
+    for i in range(len(df_with_results)):
+        save_path = os.path.join(graphs_folder, f'beam{i+1}.png')
+        plot_diagrams(df_with_results, i, save_path)
+    
+    print(f"\nAll {len(df_with_results)} beam diagrams saved to '{graphs_folder}' folder")
+    
+    print("\nAnalysis completed successfully!")
+    print(f"Results saved to: {output_file}")
+    print(f"Graphs saved to: {graphs_folder} folder")
+
+if __name__ == "__main__":
+    main()
